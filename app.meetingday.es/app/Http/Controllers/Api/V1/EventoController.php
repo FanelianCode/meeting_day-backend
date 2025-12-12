@@ -35,6 +35,13 @@ class EventoController extends Controller
      */
     public function store(Request $request)
     {
+        \Log::info('📥 EventoController::store - REQUEST RECEIVED', [
+            'user_agent' => $request->header('User-Agent'),
+            'content_type' => $request->header('Content-Type'),
+            'has_files' => $request->hasFile('file') ? 'YES' : 'NO',
+            'file_count' => $request->hasFile('file') ? count((array)$request->file('file')) : 0,
+        ]);
+
         // 1) Normalización de entrada (para tolerar strings como en PHP puro)
         $payload = $request->all();
 
@@ -168,6 +175,12 @@ class EventoController extends Controller
 
             DB::commit();
 
+            \Log::info('✅ EventoController::store - SUCCESS', [
+                'id_evento' => $evento->id_evento,
+                'images_saved' => count($savedAny),
+                'image_names' => $savedAny,
+            ]);
+
             return response()->json([
                 'success'  => true,
                 'message'  => 'Evento registrado exitosamente',
@@ -177,6 +190,11 @@ class EventoController extends Controller
 
         } catch (\Throwable $e) {
             DB::rollBack();
+            \Log::error('❌ EventoController::store - ERROR', [
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
             return response()->json([
                 'success' => false,
                 'message' => $e->getMessage(),
@@ -803,19 +821,44 @@ class EventoController extends Controller
             $files = is_array($f) ? $f : [$f];
         }
 
+        \Log::info('🖼️ handleUploadedImages START', [
+            'id_evento' => $idEvento,
+            'files_count' => count($files),
+        ]);
+
         if (empty($files)) {
+            \Log::warning('📭 handleUploadedImages: No files received');
             return $saved;
         }
 
         // Asegurar carpeta destino: storage/app/media/img_eventos
         $relativeDir = 'media/img_eventos';
         $absoluteDir = storage_path('app/' . $relativeDir);
+        
+        \Log::debug('📁 handleUploadedImages: Checking directory', [
+            'absolute_dir' => $absoluteDir,
+            'exists' => is_dir($absoluteDir),
+            'writable' => is_writable($absoluteDir),
+        ]);
+        
         if (!is_dir($absoluteDir)) {
-            @mkdir($absoluteDir, 0775, true);
+            $mkdir_result = @mkdir($absoluteDir, 0775, true);
+            \Log::info('📁 handleUploadedImages: mkdir result', [
+                'success' => $mkdir_result,
+                'dir' => $absoluteDir,
+            ]);
         }
 
-        foreach ($files as $file) {
+        foreach ($files as $index => $file) {
+            \Log::info("🔄 Processing file $index", [
+                'original_name' => $file->getClientOriginalName(),
+                'mime' => $file->getMimeType(),
+                'size' => $file->getSize(),
+                'is_valid' => $file->isValid(),
+            ]);
+
             if (!$file->isValid()) {
+                \Log::error("❌ File $index is not valid");
                 continue;
             }
 
@@ -826,13 +869,25 @@ class EventoController extends Controller
             } while ($exists);
 
             $destPath = $absoluteDir . DIRECTORY_SEPARATOR . $newFileName;
+            $sourcePath = $file->getRealPath();
+
+            \Log::debug("📤 File conversion params", [
+                'index' => $index,
+                'source' => $sourcePath,
+                'source_exists' => file_exists($sourcePath),
+                'dest' => $destPath,
+                'dest_dir_writable' => is_writable(dirname($destPath)),
+            ]);
 
             // Convertir a webp con GD (similar a tu PHP original)
-            $ok = $this->convertToWebp($file->getRealPath(), $destPath, 80);
+            $ok = $this->convertToWebp($sourcePath, $destPath, 80);
 
             if (!$ok) {
-                // fallback: guardar como original si falla (opcional)
-                // $file->move($absoluteDir, $newFileName); // sería .webp inválido; mejor saltar
+                \Log::error("❌ convertToWebp failed for file $index", [
+                    'original_name' => $file->getClientOriginalName(),
+                    'source' => $sourcePath,
+                    'dest' => $destPath,
+                ]);
                 continue;
             }
 
@@ -842,8 +897,19 @@ class EventoController extends Controller
                 'img_url'   => $newFileName,
             ]);
 
+            \Log::info("✅ File $index saved successfully", [
+                'filename' => $newFileName,
+                'dest_path' => $destPath,
+            ]);
+
             $saved[] = $newFileName;
         }
+
+        \Log::info('🖼️ handleUploadedImages COMPLETE', [
+            'id_evento' => $idEvento,
+            'files_processed' => count($files),
+            'files_saved' => count($saved),
+        ]);
 
         return $saved;
     }
@@ -854,50 +920,157 @@ class EventoController extends Controller
      */
     private function convertToWebp(string $sourcePath, string $destPath, int $quality = 80): bool
     {
+        \Log::debug('🎨 convertToWebp: START', [
+            'source' => $sourcePath,
+            'dest' => $destPath,
+            'quality' => $quality,
+            'source_exists' => file_exists($sourcePath),
+        ]);
+
         // Detectar mime
         $info = @getimagesize($sourcePath);
+        
+        \Log::debug('🎨 convertToWebp: getimagesize result', [
+            'source' => $sourcePath,
+            'info' => $info,
+            'has_mime' => $info && isset($info['mime']) ? 'YES' : 'NO',
+        ]);
+
         if (!$info || !isset($info['mime'])) {
+            \Log::warning('⚠️ convertToWebp: No MIME detected, trying generic load');
             // Intentar carga genérica
             $raw = @file_get_contents($sourcePath);
-            if ($raw === false) return false;
+            if ($raw === false) {
+                \Log::error('❌ convertToWebp: file_get_contents failed', ['source' => $sourcePath]);
+                return false;
+            }
             $img = @imagecreatefromstring($raw);
-            if (!$img) return false;
+            if (!$img) {
+                \Log::error('❌ convertToWebp: imagecreatefromstring failed', ['source' => $sourcePath]);
+                return false;
+            }
             $ok = @imagewebp($img, $destPath, $quality);
+            if (!$ok) {
+                \Log::error('❌ convertToWebp: imagewebp (generic) failed', [
+                    'dest' => $destPath,
+                    'writable' => is_writable(dirname($destPath)),
+                ]);
+            }
             @imagedestroy($img);
             return (bool) $ok;
         }
 
         $mime = $info['mime'];
+        \Log::debug('🎨 convertToWebp: MIME type detected', ['mime' => $mime]);
+
         switch ($mime) {
             case 'image/jpeg':
+                \Log::debug('🎨 convertToWebp: Processing JPEG');
                 $img = @imagecreatefromjpeg($sourcePath);
-                break;
-            case 'image/png':
-                $img = @imagecreatefrompng($sourcePath);
-                if ($img) {
-                    // preservar transparencia PNG
-                    @imagepalettetotruecolor($img);
-                    @imagealphablending($img, true);
-                    @imagesavealpha($img, true);
+                if (!$img) {
+                    \Log::error('❌ convertToWebp: imagecreatefromjpeg failed', ['source' => $sourcePath]);
+                    return false;
                 }
                 break;
-            case 'image/gif':
-                $img = @imagecreatefromgif($sourcePath);
+
+            case 'image/png':
+                \Log::debug('🎨 convertToWebp: Processing PNG');
+                $img = @imagecreatefrompng($sourcePath);
+                if (!$img) {
+                    \Log::error('❌ convertToWebp: imagecreatefrompng failed', ['source' => $sourcePath]);
+                    return false;
+                }
+                // preservar transparencia PNG
+                @imagepalettetotruecolor($img);
+                @imagealphablending($img, true);
+                @imagesavealpha($img, true);
                 break;
+
+            case 'image/gif':
+                \Log::debug('🎨 convertToWebp: Processing GIF');
+                $img = @imagecreatefromgif($sourcePath);
+                if (!$img) {
+                    \Log::error('❌ convertToWebp: imagecreatefromgif failed', ['source' => $sourcePath]);
+                    return false;
+                }
+                break;
+
             case 'image/webp':
+                \Log::debug('🎨 convertToWebp: Already WebP, copying directly');
                 // si ya es webp, copiar tal cual
-                return (bool) @copy($sourcePath, $destPath);
+                $copy_result = @copy($sourcePath, $destPath);
+                if (!$copy_result) {
+                    \Log::error('❌ convertToWebp: copy failed', [
+                        'source' => $sourcePath,
+                        'dest' => $destPath,
+                        'dest_writable' => is_writable(dirname($destPath)),
+                    ]);
+                    return false;
+                }
+                \Log::info('✅ convertToWebp: WebP copied successfully');
+                return true;
+
             default:
+                \Log::warning('⚠️ convertToWebp: Unknown MIME, trying generic load', ['mime' => $mime]);
                 // fallback genérico
                 $raw = @file_get_contents($sourcePath);
-                if ($raw === false) return false;
+                if ($raw === false) {
+                    \Log::error('❌ convertToWebp: file_get_contents (default) failed', ['source' => $sourcePath]);
+                    return false;
+                }
                 $img = @imagecreatefromstring($raw);
+                if (!$img) {
+                    \Log::error('❌ convertToWebp: imagecreatefromstring (default) failed', ['source' => $sourcePath]);
+                    return false;
+                }
                 break;
         }
 
-        if (!$img) return false;
+        if (!$img) {
+            \Log::error('❌ convertToWebp: Failed to load image', [
+                'source' => $sourcePath,
+                'mime' => $mime ?? 'unknown',
+            ]);
+            return false;
+        }
+
+        \Log::debug('🎨 convertToWebp: Image loaded, converting to WebP');
+
+        // Crear directorio destino si no existe
+        $destDir = dirname($destPath);
+        if (!is_dir($destDir)) {
+            \Log::debug('🎨 convertToWebp: Creating destination directory', ['dir' => $destDir]);
+            @mkdir($destDir, 0775, true);
+        }
+
+        \Log::debug('🎨 convertToWebp: Before imagewebp', [
+            'dest' => $destPath,
+            'dest_dir_exists' => is_dir($destDir),
+            'dest_dir_writable' => is_writable($destDir),
+        ]);
 
         $ok = @imagewebp($img, $destPath, $quality);
+        
+        \Log::debug('🎨 convertToWebp: After imagewebp', [
+            'result' => $ok ? 'SUCCESS' : 'FAILED',
+            'dest_exists_now' => file_exists($destPath),
+            'dest_size' => file_exists($destPath) ? filesize($destPath) : 0,
+        ]);
+
+        if (!$ok) {
+            \Log::error('❌ convertToWebp: imagewebp conversion failed', [
+                'source' => $sourcePath,
+                'dest' => $destPath,
+                'dest_writable' => is_writable(dirname($destPath)),
+            ]);
+        } else {
+            \Log::info('✅ convertToWebp: Conversion successful', [
+                'source' => $sourcePath,
+                'dest' => $destPath,
+                'size' => filesize($destPath),
+            ]);
+        }
+
         @imagedestroy($img);
         return (bool) $ok;
     }
