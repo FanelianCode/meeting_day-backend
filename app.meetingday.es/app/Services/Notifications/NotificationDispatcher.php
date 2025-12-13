@@ -37,6 +37,16 @@ final class NotificationDispatcher
      */
     public function dispatch(int $type, int $idEvento, int $idUser, array $payload, array $options = []): bool
     {
+        Log::info('📬 NotificationDispatcher::dispatch - ENTRY', [
+            'type' => $type,
+            'idEvento' => $idEvento,
+            'idUser' => $idUser,
+            'payload_keys' => array_keys($payload),
+            'has_mail' => isset($payload['mail']) ? 'YES' : 'NO',
+            'mail_subject_raw' => substr($payload['mail_subject'] ?? '', 0, 100),
+            'mail_body_length' => strlen($payload['mail_body'] ?? ''),
+        ]);
+
         $dryRun = (bool)($options['dry_run'] ?? false);
 
         // Matriz de canales (config + override)
@@ -86,6 +96,14 @@ final class NotificationDispatcher
                         $actionUrlSafe  = is_string($actionUrl) ? $actionUrl : null;
                         $actionTextSafe = is_string($actionText) ? $this->fixAndNormalize($actionText) : null;
 
+                        Log::debug('📧 Before Mail::send()', [
+                            'email' => $email,
+                            'subject' => $mailSubj,
+                            'body_length' => strlen($mailBody),
+                            'driver' => config('mail.driver'),
+                            'has_action_url' => !empty($actionUrlSafe),
+                        ]);
+
                         Mail::to((string)$email)->send(
                             new GenericNotificationMail(
                                 $mailSubj,
@@ -95,15 +113,26 @@ final class NotificationDispatcher
                             )
                         );
 
-                        Log::info('MAIL queued', compact('type', 'idEvento', 'idUser', 'email'));
+                        Log::info('✅ MAIL queued successfully', [
+                            'type' => $type,
+                            'idEvento' => $idEvento,
+                            'idUser' => $idUser,
+                            'email' => $email,
+                            'subject_length' => strlen($mailSubj),
+                            'body_length' => strlen($mailBody),
+                        ]);
                     } catch (\Throwable $e) {
                         $mailOk = false;
-                        Log::error('MAIL exception', [
-                            'type'    => $type,
-                            'idEvento'=> $idEvento,
-                            'idUser'  => $idUser,
-                            'email'   => $email,
-                            'err'     => $e->getMessage(),
+                        Log::error('❌ MAIL exception - COMPLETE TRACE', [
+                            'type' => $type,
+                            'idEvento' => $idEvento,
+                            'idUser' => $idUser,
+                            'email' => $email,
+                            'exception_class' => get_class($e),
+                            'exception_message' => $e->getMessage(),
+                            'exception_file' => $e->getFile(),
+                            'exception_line' => $e->getLine(),
+                            'exception_trace' => $e->getTraceAsString(),
                         ]);
                     }
                 }

@@ -28,9 +28,9 @@ class GenericNotificationMail extends Mailable
     /**
      * @param string      $subject     Asunto del correo (formateado)
      * @param string      $bodyHtml    Cuerpo del correo en HTML (NO escapado)
-     * @param string|null $actionUrl   URL del botón CTA
-     * @param string|null $actionText  Texto del botón CTA
-     * @param string|null $preheader   Texto breve para previsualización
+     * @param string|null $actionUrl   URL del botï¿½n CTA
+     * @param string|null $actionText  Texto del botï¿½n CTA
+     * @param string|null $preheader   Texto breve para previsualizaciï¿½n
      */
     public function __construct(
         string $subject,
@@ -39,7 +39,7 @@ class GenericNotificationMail extends Mailable
         ?string $actionText = null,
         ?string $preheader = null
     ) {
-        $this->subjectLine = $subject !== '' ? $subject : 'Notificación';
+        $this->subjectLine = $subject !== '' ? $subject : 'Notificaciï¿½n';
         $this->bodyHtml    = $bodyHtml;
         $this->actionUrl   = $actionUrl;
         $this->actionText  = $actionText ?: 'Ver detalle';
@@ -48,10 +48,25 @@ class GenericNotificationMail extends Mailable
         if (mb_strlen($this->preheader) > 120) {
             $this->preheader = mb_substr($this->preheader, 0, 117) . '...';
         }
-    }
+        \Illuminate\Support\Facades\Log::debug('ðŸŽ¨ GenericNotificationMail::__construct', [
+            'subject_length' => strlen($this->subjectLine),
+            'body_length' => strlen($this->bodyHtml),
+            'preheader_length' => strlen($this->preheader),
+            'has_action_url' => !empty($this->actionUrl),
+            'action_text' => substr($this->actionText, 0, 50),
+        ]);    }
 
     public function build()
     {
+        \Illuminate\Support\Facades\Log::debug('ðŸ”¨ GenericNotificationMail::build - TEMPLATE RENDER', [
+            'template' => 'mail.generic-notification',
+            'subject' => substr($this->subjectLine, 0, 100),
+            'body_length' => strlen($this->bodyHtml),
+            'action_url' => $this->actionUrl ? substr($this->actionUrl, 0, 100) : null,
+            'action_text' => $this->actionText,
+            'preheader' => substr($this->preheader, 0, 100),
+        ]);
+
         // SUBJECT + VIEW (Blade)
         return $this
             ->subject($this->subjectLine)
